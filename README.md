@@ -9,4 +9,4 @@ Tuning the architecture and adding replay buffer to improve learning. Propose a 
 ## Demo
 The following is an demo of the agent after 30 iterations of training. (Agent falling after first step...)
 
-![Demo](https://github.com/XiaowenMa/DRL_DeepMimic_Revisit/blob/master/demos/30iter_walk.mp4)
+![Demo](https://github.com/user-attachments/assets/53680baa-590d-4c71-aa56-122a984433db)

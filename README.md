@@ -20,4 +20,11 @@ Tuning the architecture/using ensemble and adding replay buffer to improve learn
 ## Demo
 The following is an demo of the agent after 30 iterations of training(simulated at 500Hz, video rendered at 100fps). (Agent falling after first step...)
 
+<!-- 
 ![Demo](https://github.com/user-attachments/assets/53680baa-590d-4c71-aa56-122a984433db)
+-->
+
+<div align="center">
+  <img src="https://github.com/user-attachments/assets/02ead9f5-4cb9-4843-b6e7-28260e5fedb2" width="700" />
+</div>
+

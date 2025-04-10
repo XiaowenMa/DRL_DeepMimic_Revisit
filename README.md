@@ -2,14 +2,14 @@
 This repo contains the dev scripts for a pytorch-mujoco version of original [DeepMimic](https://xbpeng.github.io/projects/DeepMimic/index.html) paper for Deep Reinforcement Learning project. Due to the high complexity of the original C++ project, the goal for this project is to reimplement the physics-based humanoid walking task in Mujoco using PPO with tailored reward functions plus adding a minor experimental change.
 
 For midterm checkpoint, we've currently implemented 
-- Mocap data transformation
+- Mocap data transformation and interpolation
 - Customized humanoid model
 - Customized Gym envrionment with tailored reward function(for joint position/velocity and CoM matching). 
 - PPO with GAE for optimization. 
 
-The simulation was run at 500Hz and mocap data was at 30Hz; we used 500 horizon steps for training. Initial demo video after 30 training iterations can be found under demos folder(The demo video was at 100fps).
+The simulation was run at 500Hz and mocap data was at 30Hz; the policy was updated at 30Hz and we used 64 horizon steps(skip frames=16) for training.
 
-We also have a paralleled approach implemented in loco-mujoco, which provides high frequency ref dataset.
+<!-- We also have a paralleled approach implemented in loco-mujoco, which provides high frequency ref dataset. -->
 
 
 ## Current stage and Next Steps
@@ -19,7 +19,9 @@ Tuning the architecture/using ensemble and adding replay buffer to improve learn
 
 ## Demo
 <!-- The following is an demo of the agent after 1500 iterations of training(64 horizon)(simulated at 500Hz, policy updated/video recorded at 30Hz). -->
-Here is a demonstration of the agent's performance after 1500 iterations of training, with a horizon of 64 steps. The simulation runs at 500Hz, while the policy is updated and the video is recorded at 30Hz.
+Here is a demonstration of the agent's performance after 1500 iterations of training, conducted across 32 parallel environments with a horizon of 64 steps. The simulation runs at 500Hz, while the policy is updated and the video is recorded at 30Hz.
+
+The customized reward function include joint position matching, root position and velocity matching, end effector position matching. Early termination was also implemented as suggested in original paper.
 
 <!-- 
 ![Demo](https://github.com/user-attachments/assets/53680baa-590d-4c71-aa56-122a984433db)

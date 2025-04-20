@@ -1,4 +1,6 @@
 ## DeepMimic Revisited
+Note: This repository was ported from a private version, so commit history may not fully reflect the original development process.
+
 This repo contains the dev scripts for a pytorch-mujoco version of original [DeepMimic](https://xbpeng.github.io/projects/DeepMimic/index.html) paper for Deep Reinforcement Learning project. Due to the high complexity of the original C++ project, the goal for this project is to reimplement the physics-based humanoid walking task in Mujoco using PPO with tailored reward functions plus adding a minor experimental change.
 
 For midterm checkpoint, we've currently implemented 
@@ -35,5 +37,7 @@ The customized reward function include joint position matching, root position an
 <div align="center">
   <img src="https://github.com/user-attachments/assets/85e3b5b0-4f1a-465b-a37d-3fd987c9a9c8" width="700" />
 </div>
+
+Note: The demo reflects behavior trained using a PD controller that computes targets based on future mocap poses (t+1). While this introduces future leakage and may overestimate tracking performance, it was a known limitation in our initial implementation. We are currently working on addressing this issue.
 
 

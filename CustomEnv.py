@@ -8,7 +8,7 @@ from PIL import Image
 import os
 from scipy.spatial.transform import Rotation as R
 import pyquaternion
-from mocap.mocap_util import BODY_JOINTS_IN_DP_ORDER,DOF_DEF, END_EFFECTORS, JOINT_WEIGHT,MUJOCO_PYBULLET_MAP,BODY_JOINTS
+from mocap.mocap_util import DOF_DEF, END_EFFECTORS, JOINT_WEIGHT, MUJOCO_PYBULLET_MAP, BODY_JOINTS, JOINT_RANGE
 import math
 import json
 from utils.pd_control import PDController
@@ -18,6 +18,8 @@ import torch
 MOCAP_PATH = "mocap_data/walk_long.txt"
 XML_PATH = "./test_humanoid.xml"
 RENDER_FOLDER = "./mujoco_render"
+
+
 
 class MyEnv(MujocoEnv):
     """TODO: observation space init"""
@@ -33,7 +35,7 @@ class MyEnv(MujocoEnv):
 
         # for simplicity only use qpos and qvel for now
         # print(self.data.cinert.shape)
-        self.obs_dim = self.data.qpos.shape[0] + self.data.qvel.shape[0]+self.data.cinert.flatten().shape[0]
+        self.obs_dim = self.data.qpos.shape[0] + self.data.qvel.shape[0]+self.data.cinert.flatten().shape[0]+1
         # print(self.obs_dim)
         self.observation_space = gym.spaces.Box(
             low=-np.inf, high=np.inf, shape=(self.obs_dim,), dtype=np.float64
@@ -41,8 +43,6 @@ class MyEnv(MujocoEnv):
         self.render_mode = "rgb_array"
         self.render_path = RENDER_FOLDER
         self.curr_frame_ind = 0
-        # self.camera_name = 'my_camera'  # Name of the camera in the XML
-        # self.camera_id = mujoco.mj_name2id(self.model, mujoco.mjtObjType.mjOBJ_CAMERA, self.camera_name)
 
         self.mocap = MocapDM()
         self.load_mocap(MOCAP_PATH)
@@ -55,7 +55,7 @@ class MyEnv(MujocoEnv):
         self.step_len=1 # what's this
 
         self.curr_rollout_step = 0
-        self.max_step = 500
+        self.max_step = 64
         self.ref_frame_offset = 0
 
         self.load_endeffector()
@@ -66,13 +66,15 @@ class MyEnv(MujocoEnv):
     def load_com_info(self):
         self.com = np.loadtxt("mocap/com.txt", delimiter=",")
 
-    def apply_pd_control(self,model_output):
+    def apply_pd_control(self,target_pos):
         if (self.curr_rollout_step%16)==0:
             curr_qpos = self.data.qpos[7:] # ignore root
-            ref_index = (self.curr_rollout_step//16+self.idx_init+1)%self.mocap_data_len
-            target_qpos = self.mocap.data_config[ref_index][7:] # ignore root
-            target_qvel = self.mocap.data_vel[ref_index][6:]
-            self.last_torque = self.pd_controller.pd_control(target_qpos,curr_qpos,torch.Tensor(target_qvel),model_output)
+            curr_qvel = self.data.qvel[6:] # ignore root
+
+            target_qpos = target_pos
+            target_qvel = (target_qpos-curr_qpos)/self.dt
+            
+            self.last_torque = self.pd_controller.pd_control(target_qpos,curr_qpos,target_qvel, curr_qvel)
         return self.last_torque
 
     def load_endeffector(self):
@@ -83,24 +85,23 @@ class MyEnv(MujocoEnv):
           self.end_effector[key] = np.array(self.end_effector[key])
         # print(len(self.end_effector['left_ankle']))
 
-    def set_renderer(self):
-        from gymnasium.envs.mujoco.mujoco_rendering import MujocoRenderer
+    # def set_renderer(self):
+    #     from gymnasium.envs.mujoco.mujoco_rendering import MujocoRenderer
 
-        self.mujoco_renderer = MujocoRenderer(
-            self.model,
-            self.data,
-            width = self.width,
-            height = self.height,
-            camera_id=self.camera_id,
-            camera_name=self.camera_name
-        )
+    #     self.mujoco_renderer = MujocoRenderer(
+    #         self.model,
+    #         self.data,
+    #         width = self.width,
+    #         height = self.height,
+    #         camera_id=self.camera_id,
+    #         camera_name=self.camera_name
+    #     )
     """Try to load mocap data from mocap path"""
     def load_mocap(self,mocap_path):
         self.mocap.load_mocap(mocap_path)
         self.mocap_dt = self.mocap.dt
         self.mocap_data_len = len(self.mocap.data)
     
-    """TODO: Change this if want to include more dim to obs space"""
     def set_state(self, qpos, qvel):
         # print(qpos.shape,self.model.nq,qvel.shape,self.model.nv)
         super().set_state(qpos, qvel)
@@ -114,14 +115,15 @@ class MyEnv(MujocoEnv):
         cinert = self.data.cinert.flatten().copy()
         # position = self.data.qpos.flatten().copy()[7:] # ignore root joint
         # velocity = self.data.qvel.flatten().copy()[6:] # ignore root joint
-        return np.concatenate((position, velocity,cinert))
+        phase = np.array([((self.curr_rollout_step//16+self.idx_init)%39)/38])
+        return np.concatenate((position, velocity,cinert,phase))
     
     """Random initialization"""
     def reference_state_init(self):
-        self.idx_init = random.randint(0, self.mocap_data_len//2)
+        self.idx_init = random.randint(0, self.mocap_data_len//4)
         # self.idx_init = 0
         self.idx_curr = self.idx_init
-        self.idx_tmp_count = 0
+        # self.idx_tmp_count = 0
         self.curr_rollout_step = 0
         self.ref_frame_offset = self.idx_init
         # print("ref state initialization succeeded.")
@@ -129,13 +131,14 @@ class MyEnv(MujocoEnv):
     """TODO: reward functions."""
     def step(self, action):
         self.step_len = 1
-        step_times = 1
+        step_times = 16 # to match 30fps mocap
+        action=np.clip(action,JOINT_RANGE[:,0],JOINT_RANGE[:,1])
         torque = self.apply_pd_control(action)
         # print(torque)
         self.do_simulation(torque, step_times)
         observation = self._get_obs()
         
-        truncated = self.curr_rollout_step>self.max_step
+        truncated = (self.curr_rollout_step//16)>=self.max_step
 
         # reward_alive = 1.0
         reward_alive = 0.
@@ -162,24 +165,10 @@ class MyEnv(MujocoEnv):
             # reward_alive = -1 # magic number
             reward = 0
         else:
-            reward = 0.75*pos_reward+0.1*vel_reward+0.15*end_effector_reward+0.1*self.calc_com_reward()
+            # reward = 0.75*pos_reward+0.1*vel_reward+0.15*end_effector_reward+0.1*self.calc_com_reward()
+            reward = 0.65*pos_reward+0.1*(self.calc_root_vel_reward()+vel_reward)+0.15*end_effector_reward+0.1*self.calc_com_reward()
 
         done = done | truncated
-        # reward = reward + 1 if abs(2.477-self.data.qpos[1])<0.1 else reward+math.exp(-(2.477-self.data.qpos[1])**2)
-        # 2.47718, 0.847532, -0.0,
-        # print("curr_reward:", reward)
-        # reward = reward_alive
-        # print("curr_reward:", reward)
-        # self.save_render_image(self.mujoco_renderer.render(self.render_mode),self.curr_frame_ind)
-        # self.curr_frame_ind+=1
-        # self.mujoco_renderer.close()
-
-        # with mujoco.Renderer(self.model) as renderer:
-        #     mujoco.mj_forward(self.model,self.data)
-        #     renderer.update_scene(self.data)
-        #     pixels = renderer.render()
-        #     self.save_render_image(pixels,self.curr_frame_ind)
-        #     self.curr_frame_ind+=1
 
         return observation, reward, done, truncated, info
 
@@ -198,12 +187,20 @@ class MyEnv(MujocoEnv):
 
       return math.exp(-40*total_diff)
     
-
     def calc_pos_reward(self, interpolate = True):
         assert len(self.mocap.data) != 0
         pos_diff = 0
+
+        # root pos_diff(quat)
+        curr_root_pos = pyquaternion.Quaternion(self.data.qpos[3:7]) # wxyz
+        target_root_pos = pyquaternion.Quaternion(self.mocap.data_config[self.idx_curr][3:7]) # mujoco returns quat in wxyz
+        root_weight = JOINT_WEIGHT['root']
+
+        root_diff = (curr_root_pos*target_root_pos.conjugate).angle**2
+        pos_diff+=root_diff*root_weight
+
         curr_pos_offset = 7
-        for curr_joint in BODY_JOINTS_IN_DP_ORDER:
+        for curr_joint in BODY_JOINTS:
             dof = DOF_DEF[curr_joint]
             scalar = JOINT_WEIGHT[curr_joint]
             if dof==1:
@@ -257,6 +254,14 @@ class MyEnv(MujocoEnv):
             return (q_inpl*q_curr).angle**2
         return 0
     
+    def calc_root_vel_reward(self):
+        
+        target_root_vel = self.mocap.data_vel[self.idx_curr][:3]
+        curr_root_vel = self.data.qvel[:3]
+        vel_diff = sum((curr_root_vel-target_root_vel)**2)
+        vel_reward = math.exp(-1*vel_diff)
+        # print(f"root vel: {vel_reward}")
+        return vel_reward
 
     def calc_vel_reward(self):
         assert len(self.mocap.data) != 0
@@ -301,6 +306,13 @@ class MyEnv(MujocoEnv):
         com = np.sum(body_mass*self.data.xpos)/total_mass
         target_com = self.com[last_frame_ind*3:last_frame_ind*3+3]*(1-t)+t*self.com[next_frame_ind*3:next_frame_ind*3+3]
         return math.exp(-10*sum((com-target_com)**2))
+    
+        # # match root pos
+        # last_frame_ind = self.idx_curr
+        # target_root_pos = self.mocap.data_config[last_frame_ind][:2]
+        # # print(self.mocap.data_config[last_frame_ind][0])
+        # curr_root_pos = self.data.xpos[1][:2]
+        # return math.exp(-10*sum((curr_root_pos-target_root_pos)**2))
 
 
     def euler2quat(self,x,y,z,scalar_first = True):
@@ -315,10 +327,9 @@ class MyEnv(MujocoEnv):
     '''
     def is_done(self):
         mass = np.expand_dims(self.model.body_mass, 1)
-        # xpos = self.sim.data.xipos
         xpos = self.data.xpos #CoM of all bodies in global coordinate
         z_com = (np.sum(mass * xpos, 0) / np.sum(mass))[2]
-        done = bool((z_com < 0.4) or (z_com > 2.0))
+        done = bool((z_com < 0.7) or (z_com > 2.0))
         return done
     
     def reset_model(self):
@@ -329,6 +340,7 @@ class MyEnv(MujocoEnv):
         self.set_state(qpos, qvel)
         observation = self._get_obs()
         self.idx_tmp_count = -self.step_len
+        self.prev_pos = self.data.xpos[1]
         return observation
 
     def reset_model_init(self):
@@ -350,28 +362,6 @@ if __name__=="__main__":
     assert testEnv is not None, "No env created"
     print("Successfully created env.")
     
-
-
-    # def play_mocap(self):
-        
-    #     action_size = env.action_space.shape[0]
-    #     # print(env.observation_space,env.model.nq,env.model.nv)
-    #     ac = np.zeros(action_size)
-    #     while True:
-    #         # target_config = env.mocap.data_config[env.idx_curr][7:] # to exclude root joint
-    #         # env.sim.data.qpos[7:] = target_config[:]
-    #         # env.sim.forward()
-
-    #         qpos = env.mocap.data_config[env.idx_curr]
-    #         qvel = env.mocap.data_vel[env.idx_curr]
-    #         # qpos = np.zeros_like(env.mocap.data_config[env.idx_curr])
-    #         # qvel = np.zeros_like(env.mocap.data_vel[env.idx_curr])
-    #         env.set_state(qpos, qvel)
-    #         # env.sim.step()
-    #         mujoco.mj_step(env.model,env.data)
-    #         env.calc_config_reward()
-    #         # print(env._get_obs())
-    #         env.render()
 
         
 

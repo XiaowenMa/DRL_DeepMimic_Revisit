@@ -12,6 +12,8 @@ class PPOAgent(nn.Module):
         super().__init__()
         self.name = 'PPO'
         self.epochs = epochs
+        self.n_obs = n_obs
+        self.n_actions = n_actions
 
         torch.manual_seed(0)  # needed before network init for fair comparison
 
@@ -22,8 +24,9 @@ class PPOAgent(nn.Module):
             nn.ReLU(),
             nn.Linear(1024,512),
             nn.ReLU(),
-            nn.Linear(512,n_actions)
+
         )
+        self.policy_out = nn.Linear(512,n_actions)
 
         # self.value = None  # replace
         self.value = nn.Sequential(
@@ -31,53 +34,29 @@ class PPOAgent(nn.Module):
             nn.ReLU(),
             nn.Linear(1024,512),
             nn.ReLU(),
-            nn.Linear(512,1)
         )
-        # TODO: directly use Adam for now, the paper use soft update
-        # self.policy_old = deepcopy(self.policy)
-        # self.value_old = deepcopy(self.value)
+        self.value_out = nn.Linear(512,1)
 
         self.a_lambda = a_lambda
         self.gamma = gamma
 
         # self.advantages = None
 
-        # self.init_weight()
+        self.init_weight()
 
-        # end student code
+    def policy_forward(self,obs):
+       out = self.policy_out(self.policy(obs))
+       return out
+    
+    def value_forward(self,obs):
+       out = self.value_out(self.value(obs))
+       return out
+
     def init_weight(self):
-        for m in self.policy.modules():
-            if isinstance(m,nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-        for m in self.value.modules():
-            if isinstance(m,nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-
-    # def compute_advantages(self, traj_data:TrajData):
-    #     T = traj_data.n_steps
-    #     # print(traj_data.not_dones.shape,traj_data.not_dones[-1])
-
-    #     advantages = torch.zeros_like(traj_data.rewards)
-    #     values = torch.zeros_like(traj_data.rewards)
-    #     values[-1] = self.value(traj_data.states[-1]).flatten()
-    #     # calc advantages
-    #     gae = torch.zeros_like(values[-1])
-    #     for t in range(T-2,-1,-1):
-    #       value = self.value(traj_data.states[t]).flatten()
-    #       values[t] = value
-
-    #       next_value = values[t+1]*(traj_data.not_dones[t])
-    #       delta = traj_data.rewards[t]+self.gamma*next_value-value
-    #       # print(traj_data.not_dones[t])
-    #       gae = delta + self.gamma*self.a_lambda*traj_data.not_dones[t]*gae
-    #       advantages[t] = gae
-
-    #     self.advantages = advantages
-
+        nn.init.uniform_(self.policy_out.weight, -0.003, 0.003)
+        nn.init.constant_(self.policy_out.bias, 0.0)
+        nn.init.uniform_(self.value_out.weight, -0.003, 0.003)
+        nn.init.constant_(self.value_out.bias, 0.0)
     
     def calcualte_gae(self, replay_buffer:ReplayBuffer, gamma = .99, a_lambda = .95):
         T = replay_buffer.buffer_size
@@ -96,12 +75,15 @@ class PPOAgent(nn.Module):
           delta = replay_buffer.rewards[t]+gamma*next_value-value
           gae = delta + gamma*a_lambda*replay_buffer.not_dones[t]*gae
           advantages[t] = gae
-          return values, advantages
+        return values, advantages
 
         
     def get_value_loss(self, replay_buffer, batch_indices):
         values,advantages = self.calcualte_gae(replay_buffer)
+        
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         self.advantages = advantages
+
         value_loss = torch.mean((replay_buffer.returns[batch_indices]-values[batch_indices])**2)
         return value_loss
     
@@ -113,9 +95,9 @@ class PPOAgent(nn.Module):
           p = probs.log_prob(replay_buffer.actions[batch_indices]).sum(-1)
         #   print(self.advantages[batch_indices].shape)
           ratio = torch.exp(p-replay_buffer.log_probs[batch_indices].squeeze(-1))
-          print("adv: ", torch.max(self.advantages[batch_indices]),torch.min(self.advantages[batch_indices]))
+          # print("adv: ", torch.max(self.advantages[batch_indices]),torch.min(self.advantages[batch_indices]))
         #   print(ratio.shape)
-          policy_loss=torch.mean(torch.min(ratio*self.advantages[batch_indices].detach().squeeze(-1),self.clip(ratio,epsilon)*self.advantages[batch_indices].detach().squeeze(-1)))
+          policy_loss=-torch.mean(torch.min(ratio*self.advantages[batch_indices].detach().squeeze(-1),self.clip(ratio,epsilon)*self.advantages[batch_indices].detach().squeeze(-1)))
           return policy_loss
 
 
@@ -162,6 +144,22 @@ class PPOAgent(nn.Module):
         print(policy_loss.item(),value_loss.item())
         return loss
     
+    def get_loss3(self,batch_states,batch_actions,batch_rewards,batch_returns,batch_advantages,batch_values,batch_log_probs,batch_not_dones,epsilon=0.2):
+        
+        # value_loss = torch.mean((batch_returns-batch_values)**2)
+        value_loss = torch.sum((batch_returns-batch_values)**2*batch_not_dones)/(torch.sum(batch_not_dones)+1e-8)
+
+        _,probs = self.get_action(batch_states)
+        
+        # print(actions.shape)
+        p = probs.log_prob(batch_actions).sum(-1)
+        # print("P: ", p.shape)
+        ratio = torch.exp(p-batch_log_probs)
+
+        policy_loss = -torch.sum(torch.min(ratio*batch_advantages.detach(),self.clip(ratio,epsilon)*batch_advantages.detach())*batch_not_dones)/(torch.sum(batch_not_dones)+1e-8)
+
+        return policy_loss,value_loss
+    
 
     def clip(self,ratio, epsilon):
         return torch.clamp(ratio, 1-epsilon,1+epsilon)
@@ -169,8 +167,8 @@ class PPOAgent(nn.Module):
     def get_action(self, obs):
         """TODO: update the clamp part, clamp the log_std_dev instead of std_dev"""
         # mean, log_std_dev = self.policy(obs).chunk(2, dim=-1)
-        mean= self.policy(obs)
-        std_dev = torch.ones_like(mean)
+        mean= self.policy_forward(obs)
+        std_dev = torch.ones_like(mean)*0.01
 
         # print("loc min:", mean.min().item(), "loc max:", mean.max().item())
         # print("NaNs in loc:", torch.isnan(mean).sum().item())
@@ -182,6 +180,7 @@ class PPOAgent(nn.Module):
         # std_dev = log_std_dev.exp().clamp(.2, 2)
         dist = Normal(mean,std_dev)
         action = dist.rsample()
+
         # print(action.shape)
         # log_prob = dist.log_prob(action).sum(-1)
         return action,dist

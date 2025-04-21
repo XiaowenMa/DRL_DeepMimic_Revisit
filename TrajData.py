@@ -11,11 +11,11 @@ class TrajData:
         self.states = zeros((s, e, o))
         self.actions = zeros((s, e, a))
         self.rewards = zeros((s, e))
-        self.not_dones = zeros((s, e))
+        self.not_dones = zeros((s, e),dtype=torch.int32)
 
         self.log_probs = zeros((s, e))
         self.returns = zeros((s, e))
-        self.advantages = zeros((s,e))
+        # self.advantages = zeros((s,e))
 
         self.n_steps = s
 
@@ -36,5 +36,5 @@ class TrajData:
         for t in reversed(range(self.n_steps-1)):
             self.returns[t] += self.returns[t+1] * self.not_dones[t] * gamma
 
-        self.returns = (self.returns - self.returns.mean()) / (self.returns.std() + 1e-8)
+        # self.returns = (self.returns - self.returns.mean()) / (self.returns.std() + 1e-8)
 
